@@ -7,6 +7,7 @@ import requests
 import os
 from collections import OrderedDict
 import zmq
+from datetime import datetime
 
 dirpath = os.path.dirname(__file__)
 Ui_MainWindow, QMainWindow = loadUiType(os.path.join(dirpath,'main_window.ui'))
@@ -33,18 +34,18 @@ def resetport(port_number):
     tn.write('cryo\r\n')
     tn.read_until("TL-SG2210P>",timeout=5)
     tn.write('\r\n')
-    tn.read_until("TL-SG2210P>",timeout=5)    
+    tn.read_until("TL-SG2210P>",timeout=5)
     tn.write('enable\r\n')
     tn.read_until("TL-SG2210P#",timeout=5)
     tn.write('configure\r\n')
-    tn.read_until("TL-SG2210P(config)#",timeout=5)    
+    tn.read_until("TL-SG2210P(config)#",timeout=5)
     tn.write('interface gigabitEthernet 1/0/{0}\r\n'.format(port_number))
-    tn.read_until("TL-SG2210P(config-if)#",timeout=5)    
+    tn.read_until("TL-SG2210P(config-if)#",timeout=5)
     tn.write('power inline supply disable\r\n')
-    tn.read_until("TL-SG2210P(config-if)#",timeout=5)    
+    tn.read_until("TL-SG2210P(config-if)#",timeout=5)
     time.sleep(2)
-    tn.write('power inline supply enable\r\n')    
-    tn.read_until("TL-SG2210P(config-if)#,timeout=5")    
+    tn.write('power inline supply enable\r\n')
+    tn.read_until("TL-SG2210P(config-if)#,timeout=5")
     tn.write("exit\r\n")
     tn.close()
 
@@ -60,14 +61,27 @@ class ZMQserver(QtCore.QThread):
         while True:
             msg = socket.recv()
             try:
-                msg = msg.strip()                
+                msg = msg.strip()
                 answer = self.reply_fun(msg)
                 answer = str(answer)
             except:
                 answer = 'Error'
-            socket.send(answer)        
+            socket.send(answer)
 
-          
+class WebLogger(QtCore.QThread):
+    def __init__(self, data):
+        super(QtCore.QThread, self).__init__(parent)
+        self.data = data
+    def run(self):
+        while self.data:
+            body = self.data.pop(0)
+            try:
+                r = requests.post('https://safe-coast-63973.herokuapp.com/log', data = body, timeout=120)
+            except:
+                self.data.insert(0, body)
+                print 'Error while posting data to the web'
+
+
 class MainWindow(QtGui.QMainWindow):
     def __init__(self):
         # Create the main window
@@ -78,7 +92,7 @@ class MainWindow(QtGui.QMainWindow):
         self.timer = QtCore.QTimer(self)
         self.timer.setInterval(60000)
         self.timer.timeout.connect(self.subscribe)
-        # Timer to update display 
+        # Timer to update display
         self.displayTimer = QtCore.QTimer(self)
         self.displayTimer.setInterval(2000)
         self.displayTimer.timeout.connect(self.display)
@@ -89,7 +103,7 @@ class MainWindow(QtGui.QMainWindow):
         # Timer to reset thermometers
         self.resetMMR3Timer = QtCore.QTimer(self)
         self.resetMMR3Timer.setInterval(150000)
-        self.resetMMR3Timer.timeout.connect(self.resetMMR3)        
+        self.resetMMR3Timer.timeout.connect(self.resetMMR3)
         # UDP socket
         self.udp=QtNetwork.QUdpSocket(self)
         self.udp.bind(12000)
@@ -102,6 +116,8 @@ class MainWindow(QtGui.QMainWindow):
         l = [len(k) for k in self.lastvalues.iterkeys()]
         self.fmtstring = '{{0:{0}s}} {{1}} {{2}} {{3}}'.format(max(l))
         self.newvalues = dict()
+        self.postdata = []
+        self.logger = WebLogger(self.postdata)
         # Start
         self.start()
         self.displayTimer.start()
@@ -141,7 +157,7 @@ class MainWindow(QtGui.QMainWindow):
                             channel = param[1]
                             status = param[7]
                             value = param[13]
-                            # Update values                            
+                            # Update values
                             if m['channels'][channel] :
                                 channel_name = m['channels'][channel]
                                 channel = self.lastvalues[channel_name]
@@ -163,31 +179,33 @@ class MainWindow(QtGui.QMainWindow):
                 status = ''
                 tim = ''
             self.ui.textEdit.append( self.fmtstring.format(c, val, status, tim) )
-            
+
     def webdisplay(self):
         # Gather data of interest
-        data = [ (v['time'], c,  v['value']) for c,v in self.newvalues.iteritems() if (c=='MC RuO2' or c=='MC Cernox' or c=='Still') and v['flag'] and (v['status']==0x8000 or v['status']==0x8080)]    
+        data = [ (v['time'], c,  v['value']) for c,v in self.newvalues.iteritems() if (c=='MC RuO2' or c=='MC Cernox' or c=='Still') and v['flag'] and (v['status']==0x8000 or v['status']==0x8080)]
         # Set new flag to False
         for v in self.newvalues.itervalues() : v['flag']=False
         # Sort data by timestamp
         data.sort(key=lambda x : x[0])
         # Gather data with the same timestamp
         timestamp = None
-        postdata = []
+        newdata = []
         while data:
             d = data.pop()
             if d[0]!=timestamp:
                 timestamp = d[0]
-                postdata.append({'timestamp':timestamp, d[1]:d[2]})
+                newdata.append({'timestamp':timestamp, d[1]:d[2]})
             else:
-                postdata[-1][d[1]] = d[2]
+                newdata[-1][d[1]] = d[2]
+        # Push data to data to be posted
+        for n in newdata:
+            self.postdata.append(n)
         # Send data
-        for body in postdata:    
-            try:
-                r = requests.post('https://safe-coast-63973.herokuapp.com/log', data = body, timeout=5)                
-            except:
-                print 'Error while posting data to the web'
-        
+        if not self.logger.isRunning() and self.postdata and datetime.today().hour<7:
+            self.logger.start()
+
+
+
     def resetMMR3(self):
         for m in modules:
             if not m['isalive']:
