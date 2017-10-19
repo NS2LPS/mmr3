@@ -69,14 +69,14 @@ class ZMQserver(QtCore.QThread):
             socket.send(answer)
 
 class WebLogger(QtCore.QThread):
-    def __init__(self, data):
+    def __init__(self, data, parent=None):
         super(QtCore.QThread, self).__init__(parent)
         self.data = data
     def run(self):
         while self.data:
             body = self.data.pop(0)
             try:
-                r = requests.post('https://safe-coast-63973.herokuapp.com/log', data = body, timeout=120)
+                r = requests.post('https://safe-coast-63973.herokuapp.com/dilu/log', data = body, timeout=120)
             except:
                 self.data.insert(0, body)
                 print 'Error while posting data to the web'
@@ -201,7 +201,7 @@ class MainWindow(QtGui.QMainWindow):
         for n in newdata:
             self.postdata.append(n)
         # Send data
-        if not self.logger.isRunning() and self.postdata and datetime.today().hour<7:
+        if not self.logger.isRunning() and self.postdata and datetime.today().hour>=7:
             self.logger.start()
 
 
