@@ -1,10 +1,12 @@
-from PyQt4 import QtCore, QtGui, Qt, QtNetwork, QtWebKit
-from PyQt4.uic import loadUiType
+from PyQt5 import QtCore, QtGui, Qt, QtNetwork, QtWidgets
+from PyQt5.uic import loadUiType
 import sys
 import struct
 import time
 import requests
 import os
+import traceback
+import io
 from collections import OrderedDict
 import zmq
 from datetime import datetime
@@ -12,12 +14,12 @@ from datetime import datetime
 dirpath = os.path.dirname(__file__)
 Ui_MainWindow, QMainWindow = loadUiType(os.path.join(dirpath,'main_window.ui'))
 
-modules = [ {'ip':'192.168.0.51',
+modules = [ {'ip':'::ffff:192.168.0.51',
              'port':12051,
              'channels':('MC RuO2','','Still'),
              'POE_port':8,
              'isalive':True},
-            {'ip':'192.168.0.53',
+            {'ip':'::ffff:192.168.0.53',
              'port':12053,
              'channels':('MC Cernox','4K stage','50K stage'),
              'POE_port':6,
@@ -59,14 +61,17 @@ class ZMQserver(QtCore.QThread):
         socket = context.socket(zmq.REP)
         socket.bind("tcp://*:%s" % self.port)
         while True:
-            msg = socket.recv()
+            msg = socket.recv().decode()
             try:
                 msg = msg.strip()
                 answer = self.reply_fun(msg)
                 answer = str(answer)
             except:
-                answer = 'Error'
-            socket.send(answer)
+                err = io.StringIO()
+                traceback.print_exc(file=err)
+                answer = err.getvalue()
+                err.close()
+            socket.send(answer.encode())
 
 class WebLogger(QtCore.QThread):
     def __init__(self, data, parent=None):
@@ -79,10 +84,10 @@ class WebLogger(QtCore.QThread):
                 r = requests.post('https://safe-coast-63973.herokuapp.com/dilu/log', data = body, timeout=120)
             except:
                 self.data.insert(0, body)
-                print 'Error while posting data to the web'
+                print('Error while posting data to the web')
 
 
-class MainWindow(QtGui.QMainWindow):
+class MainWindow(QtWidgets.QMainWindow):
     def __init__(self):
         # Create the main window
         super(MainWindow, self).__init__()
@@ -113,7 +118,7 @@ class MainWindow(QtGui.QMainWindow):
         for m in modules:
             self.lastvalues.extend([ (c, {'value':None,'time':None,'status':None} ) for c in m['channels'] if c])
         self.lastvalues = OrderedDict(self.lastvalues)
-        l = [len(k) for k in self.lastvalues.iterkeys()]
+        l = [len(k) for k in self.lastvalues.keys()]
         self.fmtstring = '{{0:{0}s}} {{1}} {{2}} {{3}}'.format(max(l))
         self.newvalues = dict()
         self.postdata = []
@@ -139,7 +144,7 @@ class MainWindow(QtGui.QMainWindow):
 
     def send(self, msg):
         for m in modules:
-            self.udp.writeDatagram(msg, QtNetwork.QHostAddress(m['ip']), m['port'])
+            c=self.udp.writeDatagram(msg.encode(), QtNetwork.QHostAddress(m['ip']), m['port'])
 
     def process(self):
         fmt = '<BBHBBIHHdddddd'
@@ -150,7 +155,7 @@ class MainWindow(QtGui.QMainWindow):
             for m in modules:
                 if host.toString()== m['ip']:
                     m['isalive']=True
-                    for i in range(len(datagram)/lenframe):
+                    for i in range(len(datagram)//lenframe):
                         # Frame decoding
                         param = struct.unpack_from(fmt, datagram, i*lenframe)
                         if param[0]==0:
@@ -168,7 +173,7 @@ class MainWindow(QtGui.QMainWindow):
 
     def display(self):
         self.ui.textEdit.clear()
-        for c,lv in self.lastvalues.iteritems():
+        for c,lv in self.lastvalues.items():
             if lv['value']:
                 val = '{0:7.3f} K'.format(lv['value']) if lv['value'] > 1 else '{0:6.2f} mK'.format(lv['value']*1e3)
                 status = '0x{0:04x}'.format(lv['status'])
@@ -182,9 +187,9 @@ class MainWindow(QtGui.QMainWindow):
 
     def webdisplay(self):
         # Gather data of interest
-        data = [ (v['time'], c,  v['value']) for c,v in self.newvalues.iteritems() if (c=='MC RuO2' or c=='MC Cernox' or c=='Still') and v['flag'] and (v['status']==0x8000 or v['status']==0x8080)]
+        data = [ (v['time'], c,  v['value']) for c,v in self.newvalues.items() if (c=='MC RuO2' or c=='MC Cernox' or c=='Still') and v['flag'] and (v['status']==0x8000 or v['status']==0x8080)]
         # Set new flag to False
-        for v in self.newvalues.itervalues() : v['flag']=False
+        for v in self.newvalues.values() : v['flag']=False
         # Sort data by timestamp
         data.sort(key=lambda x : x[0])
         # Gather data with the same timestamp
@@ -209,7 +214,7 @@ class MainWindow(QtGui.QMainWindow):
     def resetMMR3(self):
         for m in modules:
             if not m['isalive']:
-                print 'Turning power off on port',m['POE_port']
+                print('Turning power off on port',m['POE_port'])
                 resetport(m['POE_port'])
                 m['isalive']=True
             else:
@@ -220,7 +225,7 @@ class MainWindow(QtGui.QMainWindow):
 
 
 if __name__=="__main__":
-    app=QtGui.QApplication(sys.argv)
+    app=QtWidgets.QApplication(sys.argv)
     main=MainWindow()
     main.show()
     app.exec_()
